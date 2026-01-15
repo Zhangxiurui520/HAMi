@@ -34,6 +34,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/device/hygon"
 	"github.com/Project-HAMi/HAMi/pkg/device/iluvatar"
 	"github.com/Project-HAMi/HAMi/pkg/device/kunlun"
+	"github.com/Project-HAMi/HAMi/pkg/device/mars"
 	"github.com/Project-HAMi/HAMi/pkg/device/metax"
 	"github.com/Project-HAMi/HAMi/pkg/device/mthreads"
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
@@ -66,6 +67,7 @@ var (
 )
 
 type Config struct {
+	MarsConfig      mars.MarsConfig           `yaml:"mars"`
 	NvidiaConfig    nvidia.NvidiaConfig       `yaml:"nvidia"`
 	MetaxConfig     metax.MetaxConfig         `yaml:"metax"`
 	HygonConfig     hygon.HygonConfig         `yaml:"hygon"`
@@ -125,6 +127,20 @@ func InitDevicesWithConfig(config *Config) error {
 			}
 			return nvidia.InitNvidiaDevice(nvidiaConfig), nil
 		}, config.NvidiaConfig},
+		{mars.MarsGPUDevice, mars.MarsGPUCommonWord, func(cfg any) (device.Devices, error) {
+			marsConfig, ok := cfg.(mars.MarsConfig)
+			if !ok {
+				return nil, fmt.Errorf("invalid configuration for %s", mars.MarsGPUCommonWord)
+			}
+			return mars.InitMarsDevice(marsConfig), nil
+		}, config.MarsConfig},
+		{mars.MarsSGPUDevice, mars.MarsSGPUCommonWord, func(cfg any) (device.Devices, error) {
+			marsConfig, ok := cfg.(mars.MarsConfig)
+			if !ok {
+				return nil, fmt.Errorf("invalid configuration for %s", mars.MarsSGPUCommonWord)
+			}
+			return mars.InitMarsSDevice(marsConfig), nil
+		}, config.MarsConfig},
 		{cambricon.CambriconMLUDevice, cambricon.CambriconMLUCommonWord, func(cfg any) (device.Devices, error) {
 			cambriconConfig, ok := cfg.(cambricon.CambriconConfig)
 			if !ok {

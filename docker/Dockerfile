@@ -15,10 +15,11 @@ FROM $NVIDIA_IMAGE AS nvbuild
 COPY ./libvgpu /libvgpu
 WORKDIR /libvgpu
 ENV DEBIAN_FRONTEND=noninteractive
+RUN  sed -i 's|http://archive.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g; s|http://security.ubuntu.com/ubuntu/|https://mirrors.tuna.tsinghua.edu.cn/ubuntu/|g' /etc/apt/sources.list
 RUN apt-get -y update; apt-get -y install cmake
 RUN bash ./build.sh
 
-FROM nvidia/cuda:12.6.3-base-ubi8
+FROM registry.nscc-tj.cn/hami/nvidia/cuda:12.6.3-base-ubi8
 RUN dnf update -y -x cuda-toolkit-config-common -x cuda-toolkit-12-config-common
 RUN rm -rf /usr/local/cuda-12.6/compat/libcuda.so*
 ENV NVIDIA_DISABLE_REQUIRE="true"
@@ -39,3 +40,4 @@ COPY ./docker/vgpu-init.sh /k8s-vgpu/bin/vgpu-init.sh
 ENV PATH="/k8s-vgpu/bin:${PATH}"
 ARG DEST_DIR
 ENTRYPOINT ["/bin/bash", "-c", "entrypoint.sh  $DEST_DIR"]
+

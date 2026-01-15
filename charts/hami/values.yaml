@@ -60,6 +60,12 @@ kunlunResourceVMemoryName: "kunlunxin.com/vxpu-memory"
 
 schedulerName: "hami-scheduler"
 
+#Mars sGPU Parameters
+marsResourceName: "mars-tech.com/sgpu"
+marsResourceCore: "mars-tech.com/vcore"
+marsResourceMem: "mars-tech.com/vmemory"
+marssGPUTopologyAware: "false"
+
 podSecurityPolicy:
   enabled: false
 

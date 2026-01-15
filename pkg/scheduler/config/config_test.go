@@ -35,6 +35,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/device/hygon"
 	"github.com/Project-HAMi/HAMi/pkg/device/iluvatar"
 	"github.com/Project-HAMi/HAMi/pkg/device/kunlun"
+	"github.com/Project-HAMi/HAMi/pkg/device/mars"
 	"github.com/Project-HAMi/HAMi/pkg/device/metax"
 	"github.com/Project-HAMi/HAMi/pkg/device/mthreads"
 	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
@@ -62,6 +63,11 @@ hygon:
   resourceCoreName: hygon.com/dcucores
 metax:
   resourceCountName: "metax-tech.com/gpu"
+mars:
+  resourceCountName: "mars-tech.com/gpu"
+  resourceVCountName: "mars-tech.com/sgpu"
+  resourceVMemoryName: "mars-tech.com/vmemory"
+  resourceVCoreName: "mars-tech.com/vcore"
 enflame:
   resourceNameGCU: "enflame.com/gcu"
   resourceNameVGCU: "enflame.com/vgcu"
@@ -362,6 +368,8 @@ func setupTest(t *testing.T) (map[string]string, map[string]device.Devices) {
 
 	// Expected devices map
 	expectedDevices := map[string]string{
+		mars.MarsGPUDevice:           mars.MarsGPUCommonWord,
+		mars.MarsSGPUDevice:          mars.MarsSGPUCommonWord,
 		nvidia.NvidiaGPUDevice:       nvidia.NvidiaGPUCommonWord,
 		cambricon.CambriconMLUDevice: cambricon.CambriconMLUCommonWord,
 		hygon.HygonDCUDevice:         hygon.HygonDCUCommonWord,

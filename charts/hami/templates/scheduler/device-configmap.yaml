@@ -8,6 +8,13 @@ metadata:
     {{- include "hami-vgpu.labels" . | nindent 4 }}
 data:
   device-config.yaml: |-
+    mars:
+      resourceCountName: "mars-tech.com/gpu"
+
+      resourceVCountName: {{ .Values.marsResourceName }}
+      resourceVMemoryName: {{ .Values.marsResourceMem }}
+      resourceVCoreName: {{ .Values.marsResourceCore }}
+      sgpuTopologyAware: {{ .Values.marssGPUTopologyAware }}
   {{- if .Files.Glob "files/device-config.yaml" }}
   {{- .Files.Get "files/device-config.yaml" | nindent 4}}
   {{- else }}
