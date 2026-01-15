@@ -21,6 +21,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -190,6 +192,13 @@ func start(c *cli.Context, flags []cli.Flag) error {
 		return fmt.Errorf("failed to create FS watcher: %v", err)
 	}
 	defer watcher.Close()
+	// Watch the directory where the ConfigMap is mounted so updates trigger reload
+	configDir := filepath.Dir(plugin.ConfigFilePath)
+	if err := watcher.Add(configDir); err != nil {
+		klog.Warningf("failed to watch config directory %s: %v", configDir, err)
+	} else {
+		klog.Infof("Watching config directory %s for changes.", configDir)
+	}
 	//device.InitDevices()
 
 	/*Loading config files*/
@@ -237,6 +246,13 @@ restart:
 			if event.Name == kubeletdevicepluginv1beta1.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
 				klog.Infof("inotify: %s created, restarting.", kubeletdevicepluginv1beta1.KubeletSocket)
 				goto restart
+			}
+			// If the config file under the watched config dir changed, restart to reload
+			if strings.HasSuffix(event.Name, filepath.Base(plugin.ConfigFilePath)) {
+				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Rename == fsnotify.Rename || event.Op&fsnotify.Remove == fsnotify.Remove {
+					klog.Infof("inotify: config %s changed (%s), restarting.", event.Name, event.Op.String())
+					goto restart
+				}
 			}
 
 		// Watch for any other fs errors and log them.
