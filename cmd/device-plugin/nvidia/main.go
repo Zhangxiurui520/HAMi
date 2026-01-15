@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -192,12 +191,25 @@ func start(c *cli.Context, flags []cli.Flag) error {
 		return fmt.Errorf("failed to create FS watcher: %v", err)
 	}
 	defer watcher.Close()
-	// Watch the directory where the ConfigMap is mounted so updates trigger reload
-	configDir := filepath.Dir(plugin.ConfigFilePath)
-	if err := watcher.Add(configDir); err != nil {
-		klog.Warningf("failed to watch config directory %s: %v", configDir, err)
-	} else {
-		klog.Infof("Watching config directory %s for changes.", configDir)
+	// Watch config file (if provided) for hot-reload. Watch both
+	// the file path and its directory to detect atomic updates from
+	// Kubernetes ConfigMap mounts (which often replace the file via rename).
+	configPath := c.String("config-file")
+	if configPath != "" {
+		// watch the file itself (best-effort)
+		if err := watcher.Add(configPath); err != nil {
+			klog.Warningf("failed to watch config file %s: %v", configPath, err)
+		} else {
+			klog.Infof("Watching config file %s for changes.", configPath)
+		}
+
+		// also watch the directory containing the file to catch atomic swaps
+		dir := filepath.Dir(configPath)
+		if err := watcher.Add(dir); err != nil {
+			klog.Warningf("failed to watch config dir %s: %v", dir, err)
+		} else {
+			klog.Infof("Watching config dir %s for changes.", dir)
+		}
 	}
 	//device.InitDevices()
 
@@ -247,11 +259,22 @@ restart:
 				klog.Infof("inotify: %s created, restarting.", kubeletdevicepluginv1beta1.KubeletSocket)
 				goto restart
 			}
-			// If the config file under the watched config dir changed, restart to reload
-			if strings.HasSuffix(event.Name, filepath.Base(plugin.ConfigFilePath)) {
-				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Rename == fsnotify.Rename || event.Op&fsnotify.Remove == fsnotify.Remove {
-					klog.Infof("inotify: config %s changed (%s), restarting.", event.Name, event.Op.String())
-					goto restart
+			// If the watched config file or its directory emitted an event, and
+			// the event concerns the config file, trigger restart to reload.
+			if configPath != "" {
+				// Direct match (file changed)
+				if event.Name == configPath {
+					if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
+						klog.Infof("inotify: config file %s changed (%s), restarting.", configPath, event.Op.String())
+						goto restart
+					}
+				}
+				// Directory-based event: check basename match
+				if filepath.Base(event.Name) == filepath.Base(configPath) {
+					if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
+						klog.Infof("inotify: config file %s changed via dir event (%s), restarting.", configPath, event.Op.String())
+						goto restart
+					}
 				}
 			}
 
