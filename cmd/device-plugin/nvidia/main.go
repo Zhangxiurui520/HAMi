@@ -21,7 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	"syscall"
 	"time"
 
@@ -186,31 +186,13 @@ func start(c *cli.Context, flags []cli.Flag) error {
 	klog.Info("Starting FS watcher.")
 	util.NodeName = os.Getenv(util.NodeNameEnvName)
 	client.InitGlobalClient()
-	watcher, err := newFSWatcher(kubeletdevicepluginv1beta1.DevicePluginPath)
+	// watch both kubelet device-plugin path and the directory containing
+	// the device-plugin config (so edits to the mounted ConfigMap are seen)
+	watcher, err := newFSWatcher(kubeletdevicepluginv1beta1.DevicePluginPath, path.Dir(plugin.ConfigFilePath))
 	if err != nil {
 		return fmt.Errorf("failed to create FS watcher: %v", err)
 	}
 	defer watcher.Close()
-	// Watch config file (if provided) for hot-reload. Watch both
-	// the file path and its directory to detect atomic updates from
-	// Kubernetes ConfigMap mounts (which often replace the file via rename).
-	configPath := c.String("config-file")
-	if configPath != "" {
-		// watch the file itself (best-effort)
-		if err := watcher.Add(configPath); err != nil {
-			klog.Warningf("failed to watch config file %s: %v", configPath, err)
-		} else {
-			klog.Infof("Watching config file %s for changes.", configPath)
-		}
-
-		// also watch the directory containing the file to catch atomic swaps
-		dir := filepath.Dir(configPath)
-		if err := watcher.Add(dir); err != nil {
-			klog.Warningf("failed to watch config dir %s: %v", dir, err)
-		} else {
-			klog.Infof("Watching config dir %s for changes.", dir)
-		}
-	}
 	//device.InitDevices()
 
 	/*Loading config files*/
@@ -255,27 +237,16 @@ restart:
 		// 'kubeletdevicepluginv1beta1.KubeletSocket' file. When this occurs, restart this loop,
 		// restarting all of the plugins in the process.
 		case event := <-watcher.Events:
+			// If kubelet socket created, restart to re-register
 			if event.Name == kubeletdevicepluginv1beta1.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
 				klog.Infof("inotify: %s created, restarting.", kubeletdevicepluginv1beta1.KubeletSocket)
 				goto restart
 			}
-			// If the watched config file or its directory emitted an event, and
-			// the event concerns the config file, trigger restart to reload.
-			if configPath != "" {
-				// Direct match (file changed)
-				if event.Name == configPath {
-					if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
-						klog.Infof("inotify: config file %s changed (%s), restarting.", configPath, event.Op.String())
-						goto restart
-					}
-				}
-				// Directory-based event: check basename match
-				if filepath.Base(event.Name) == filepath.Base(configPath) {
-					if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 {
-						klog.Infof("inotify: config file %s changed via dir event (%s), restarting.", configPath, event.Op.String())
-						goto restart
-					}
-				}
+			// If the device-plugin config mounted from ConfigMap changed, restart plugins so
+			// they reload the config and re-register resources with kubelet.
+			if event.Name == plugin.ConfigFilePath && event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+				klog.Infof("inotify: config file %s changed (%s), restarting plugins.", plugin.ConfigFilePath, event.Op)
+				goto restart
 			}
 
 		// Watch for any other fs errors and log them.
