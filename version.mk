@@ -9,6 +9,6 @@ NVIDIA_IMAGE=registry.nscc-tj.cn/hami/nvidia/cuda:12.3.2-devel-ubuntu20.04
 DEST_DIR=/usr/local/vgpu/
 
 VERSION = v2.7.0
-IMG_NAME =registry.nscc-tj.cn/hami/hami-mars
+IMG_NAME =registry.nscc-tj.cn/hami/hami-mars-config
 IMG_TAG="${IMG_NAME}:${VERSION}"
 

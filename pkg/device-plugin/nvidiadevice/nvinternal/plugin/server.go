@@ -254,6 +254,15 @@ func (plugin *NvidiaDevicePlugin) Reload() error {
 	// Update exposed devices (copy-on-write) based on the latest filter.
 	plugin.devices.Store(filterDevices(plugin.rm.Devices()))
 	plugin.notifyUpdate()
+
+	// Also update node annotations immediately (otherwise WatchAndRegister may
+	// only patch on its next sleep interval).
+	if err := plugin.RegistrInAnnotation(); err != nil {
+		klog.ErrorS(err, "failed to register node annotations on config reload")
+		// Do not fail the reload (and trigger a slow restart) just because
+		// patching annotations failed; the periodic WatchAndRegister loop will
+		// retry.
+	}
 	return nil
 }
 
