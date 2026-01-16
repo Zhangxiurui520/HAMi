@@ -191,6 +191,7 @@ func start(c *cli.Context, flags []cli.Flag) error {
 	// watch both kubelet device-plugin path and the directory containing
 	// the device-plugin config (so edits to the mounted ConfigMap are seen)
 	watcher, err := newFSWatcher(kubeletdevicepluginv1beta1.DevicePluginPath, path.Dir(plugin.ConfigFilePath))
+	klog.Infof("fsnotify watching paths: %v", watcher.WatchList())
 	if err != nil {
 		return fmt.Errorf("failed to create FS watcher: %v", err)
 	}
@@ -250,7 +251,7 @@ restart:
 				base := filepath.Base(event.Name)
 				klog.Infof("inotify: config change detected (event=%s, file=%s)", event.Op, event.Name)
 				if base == filepath.Base(plugin.ConfigFilePath) ||
-					strings.HasPrefix(base, "..data") ||
+					base == "..data" ||
 					strings.HasPrefix(base, "..") {
 					klog.Infof("inotify: config change detected (event=%s, file=%s), restarting plugins", event.Op, event.Name)
 					goto restart
