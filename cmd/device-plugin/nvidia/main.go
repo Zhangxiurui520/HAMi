@@ -188,7 +188,7 @@ func start(c *cli.Context, flags []cli.Flag) error {
 	client.InitGlobalClient()
 	// watch both kubelet device-plugin path and the directory containing
 	// the device-plugin config (so edits to the mounted ConfigMap are seen)
-	watcher, err := newFSWatcher(kubeletdevicepluginv1beta1.DevicePluginPath, path.Dir(plugin.ConfigFilePath))
+	watcher, err := newFSWatcher(kubeletdevicepluginv1beta1.DevicePluginPath, path.Dir(plugin.ConfigRealHotFilePath))
 	if err != nil {
 		return fmt.Errorf("failed to create FS watcher: %v", err)
 	}
@@ -244,8 +244,9 @@ restart:
 			}
 			// If the device-plugin config mounted from ConfigMap changed, restart plugins so
 			// they reload the config and re-register resources with kubelet.
-			if event.Name == plugin.ConfigFilePath && event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
-				klog.Infof("inotify: config file %s changed (%s), restarting plugins.", plugin.ConfigFilePath, event.Op)
+			if event.Name == plugin.ConfigRealHotFilePath && event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+				klog.Infof("inotify: config file %s changed (%s), restarting plugins.", plugin.ConfigRealHotFilePath, event.Op)
+				klog.Infof("restarting due to config file change: %s", event.Op)
 				goto restart
 			}
 
