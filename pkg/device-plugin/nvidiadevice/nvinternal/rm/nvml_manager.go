@@ -71,13 +71,6 @@ func NewNVMLResourceManagers(nvmllib nvml.Interface, config *nvidia.DeviceConfig
 		if len(devices) == 0 {
 			continue
 		}
-		for key, value := range devices {
-			if nvidia.FilterDeviceToRegister(value.ID, value.Index) {
-				klog.V(5).InfoS("Filtering device", "device", value.ID)
-				delete(devices, key)
-				continue
-			}
-		}
 		r := &nvmlResourceManager{
 			resourceManager: resourceManager{
 				config:   config,
