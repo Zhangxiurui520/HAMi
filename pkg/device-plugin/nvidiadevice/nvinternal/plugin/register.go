@@ -192,6 +192,22 @@ func (plugin *NvidiaDevicePlugin) RegistrInAnnotation() error {
 		klog.Errorln("get node error", err.Error())
 		return err
 	}
+	// If there are no devices to manage, remove stale registration annotations.
+	if devices == nil || len(*devices) == 0 {
+		keysToDelete := []string{nvidia.RegisterAnnos, nvidia.RegisterGPUPairScore}
+		for k := range node.Annotations {
+			if strings.HasPrefix(k, nvidia.RegisterAnnos) {
+				keysToDelete = append(keysToDelete, k)
+			}
+		}
+		if err := util.DeleteNodeAnnotations(node, keysToDelete...); err != nil {
+			klog.ErrorS(err, "failed to delete stale nvidia register annotations")
+			return err
+		}
+		// Still update handshake so the scheduler can observe liveness.
+		annos[nvidia.HandshakeAnnos] = "Reported " + time.Now().String()
+		return util.PatchNodeAnnotations(node, annos)
+	}
 	encodeddevices := device.EncodeNodeDevices(*devices)
 	var data []byte
 	if os.Getenv("ENABLE_TOPOLOGY_SCORE") == "true" {

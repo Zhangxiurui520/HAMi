@@ -154,6 +154,49 @@ func PatchNodeAnnotations(node *corev1.Node, annotations map[string]string) erro
 	return err
 }
 
+// DeleteNodeAnnotations deletes the specified annotation keys from the node.
+// This uses a JSON merge patch with null values so it is safe to call even if
+// the keys do not exist.
+func DeleteNodeAnnotations(node *corev1.Node, keys ...string) error {
+	if node == nil {
+		return fmt.Errorf("node is nil")
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	type patchMetadata struct {
+		Annotations map[string]*string `json:"annotations"`
+	}
+	type patchNode struct {
+		Metadata patchMetadata `json:"metadata"`
+	}
+
+	annos := make(map[string]*string, len(keys))
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		annos[k] = nil
+	}
+
+	p := patchNode{}
+	p.Metadata.Annotations = annos
+
+	bytes, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.GetClient().CoreV1().Nodes().
+		Patch(context.Background(), node.Name, k8stypes.MergePatchType, bytes, metav1.PatchOptions{})
+	if err != nil {
+		klog.Infoln("annotations_to_delete=", keys)
+		klog.Infof("delete node annotations for %v failed, %v", node.Name, err)
+	}
+	return err
+}
+
 func PatchPodAnnotations(pod *corev1.Pod, annotations map[string]string) error {
 	type patchMetadata struct {
 		Annotations map[string]string `json:"annotations,omitempty"`

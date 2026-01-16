@@ -37,6 +37,7 @@ import (
 	"github.com/Project-HAMi/HAMi/pkg/device-plugin/nvidiadevice/nvinternal/info"
 	"github.com/Project-HAMi/HAMi/pkg/device-plugin/nvidiadevice/nvinternal/plugin"
 	"github.com/Project-HAMi/HAMi/pkg/device-plugin/nvidiadevice/nvinternal/rm"
+	"github.com/Project-HAMi/HAMi/pkg/device/nvidia"
 	"github.com/Project-HAMi/HAMi/pkg/util"
 	"github.com/Project-HAMi/HAMi/pkg/util/client"
 	flagutil "github.com/Project-HAMi/HAMi/pkg/util/flag"
@@ -347,10 +348,36 @@ func startPlugins(c *cli.Context, flags []cli.Flag, restarting bool) ([]plugin.I
 	}
 
 	if started == 0 {
-		klog.Info("No devices found. Waiting indefinitely.")
+		klog.Info("No devices found. Cleaning stale node annotations and waiting indefinitely.")
+		cleanupStaleNvidiaRegisterAnnotations()
 	}
 
 	return plugins, false, nil
+}
+
+func cleanupStaleNvidiaRegisterAnnotations() {
+	if util.NodeName == "" {
+		return
+	}
+	node, err := util.GetNode(util.NodeName)
+	if err != nil {
+		klog.ErrorS(err, "failed to get node for annotation cleanup")
+		return
+	}
+	keysToDelete := []string{nvidia.RegisterAnnos, nvidia.RegisterGPUPairScore}
+	for k := range node.Annotations {
+		if strings.HasPrefix(k, nvidia.RegisterAnnos) {
+			keysToDelete = append(keysToDelete, k)
+		}
+	}
+	if err := util.DeleteNodeAnnotations(node, keysToDelete...); err != nil {
+		klog.ErrorS(err, "failed to delete stale nvidia register annotations")
+		return
+	}
+	// Keep handshake liveness updated.
+	if err := util.PatchNodeAnnotations(node, map[string]string{nvidia.HandshakeAnnos: "Reported " + time.Now().String()}); err != nil {
+		klog.ErrorS(err, "failed to update handshake annotation")
+	}
 }
 
 func stopPlugins(plugins []plugin.Interface) error {
