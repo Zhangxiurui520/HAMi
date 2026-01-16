@@ -70,7 +70,6 @@ const (
 	deviceListAsVolumeMountsContainerPathRoot = "/var/run/nvidia-container-devices"
 	NodeLockNvidia                            = "hami.io/mutex.lock"
 	ConfigFilePath                            = "/config/config.json"
-	ConfigRealHotFilePath                     = "/config/..data/config.json"
 )
 
 var (
