@@ -154,6 +154,33 @@ func PatchNodeAnnotations(node *corev1.Node, annotations map[string]string) erro
 	return err
 }
 
+// PatchNodeAnnotationsWithDelete patches node annotations, supporting deletion.
+// If a value in the map is nil, the corresponding annotation key is removed
+// (sent as JSON null in a StrategicMergePatch).
+func PatchNodeAnnotationsWithDelete(node *corev1.Node, annotations map[string]*string) error {
+	type patchMetadata struct {
+		Annotations map[string]*string `json:"annotations,omitempty"`
+	}
+	type patchPod struct {
+		Metadata patchMetadata `json:"metadata"`
+	}
+
+	p := patchPod{}
+	p.Metadata.Annotations = annotations
+
+	bytes, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	_, err = client.GetClient().CoreV1().Nodes().
+		Patch(context.Background(), node.Name, k8stypes.StrategicMergePatchType, bytes, metav1.PatchOptions{})
+	if err != nil {
+		klog.Infoln("annotations=", annotations)
+		klog.Infof("patch node %v failed, %v", node.Name, err)
+	}
+	return err
+}
+
 func PatchPodAnnotations(pod *corev1.Pod, annotations map[string]string) error {
 	type patchMetadata struct {
 		Annotations map[string]string `json:"annotations,omitempty"`

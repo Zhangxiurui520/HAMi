@@ -192,12 +192,29 @@ func (plugin *NvidiaDevicePlugin) getAPIDevices() *[]*device.DeviceInfo {
 func (plugin *NvidiaDevicePlugin) RegistrInAnnotation() error {
 	devices := plugin.getAPIDevices()
 	klog.InfoS("start working on the devices", "devices", devices)
-	annos := make(map[string]string)
 	node, err := util.GetNode(util.NodeName)
 	if err != nil {
 		klog.Errorln("get node error", err.Error())
 		return err
 	}
+	if devices == nil || len(*devices) == 0 {
+		// No managed devices: remove register-related annotations to avoid leaving
+		// stale device information on the node.
+		reported := "Reported " + time.Now().String()
+		patch := map[string]*string{
+			nvidia.HandshakeAnnos:       &reported,
+			nvidia.RegisterAnnos:        nil,
+			nvidia.RegisterGPUPairScore: nil,
+		}
+		klog.Infof("no managed devices found, deleting node annotations: %v", []string{nvidia.RegisterAnnos, nvidia.RegisterGPUPairScore})
+		err := util.PatchNodeAnnotationsWithDelete(node, patch)
+		if err != nil {
+			klog.Errorln("patch node error", err.Error())
+		}
+		return err
+	}
+
+	annos := make(map[string]string)
 	encodeddevices := device.EncodeNodeDevices(*devices)
 	var data []byte
 	if os.Getenv("ENABLE_TOPOLOGY_SCORE") == "true" {
