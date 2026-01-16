@@ -248,7 +248,7 @@ restart:
 			// they reload the config and re-register resources with kubelet.
 			if event.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Remove|fsnotify.Write) != 0 {
 				base := filepath.Base(event.Name)
-
+				klog.Infof("inotify: config change detected (event=%s, file=%s)", event.Op, event.Name)
 				if base == filepath.Base(plugin.ConfigFilePath) ||
 					strings.HasPrefix(base, "..data") ||
 					strings.HasPrefix(base, "..") {
