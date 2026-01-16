@@ -45,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	spec "github.com/NVIDIA/k8s-device-plugin/api/config/v1"
@@ -88,6 +89,7 @@ type NvidiaDevicePlugin struct {
 	deviceListEnvvar     string
 	deviceListStrategies spec.DeviceListStrategies
 	socket               string
+	configMu             sync.RWMutex
 	schedulerConfig      nvidia.NvidiaConfig
 
 	applyMutex                 sync.Mutex
@@ -103,9 +105,15 @@ type NvidiaDevicePlugin struct {
 	operatingMode string
 	migCurrent    nvidia.MigPartedSpec
 
+	// devices is the set of devices this plugin currently exposes to kubelet.
+	// It is updated using copy-on-write so ListAndWatch / Allocate can read it
+	// without races when config is reloaded.
+	devices atomic.Value // stores rm.Devices
+
 	server *grpc.Server
 	health chan *rm.Device
 	stop   chan any
+	update chan struct{}
 }
 
 func readFromConfigFile(sConfig *nvidia.NvidiaConfig, path string) (string, error) {
@@ -162,7 +170,7 @@ func NewNvidiaDevicePlugin(nvconfig *nvidia.DeviceConfig, resourceManager rm.Res
 	if err := config.InitDevicesWithConfig(sConfig); err != nil {
 		klog.Fatalf("failed to initialize devices: %v", err)
 	}
-	return &NvidiaDevicePlugin{
+	p := &NvidiaDevicePlugin{
 		rm:                         resourceManager,
 		config:                     nvconfig,
 		deviceListEnvvar:           "NVIDIA_VISIBLE_DEVICES",
@@ -186,12 +194,17 @@ func NewNvidiaDevicePlugin(nvconfig *nvidia.DeviceConfig, resourceManager rm.Res
 		health: nil,
 		stop:   nil,
 	}
+
+	// Initialize the exposed device set based on the current filter config.
+	p.devices.Store(filterDevices(resourceManager.Devices()))
+	return p
 }
 
 func (plugin *NvidiaDevicePlugin) initialize() {
 	plugin.server = grpc.NewServer([]grpc.ServerOption{}...)
 	plugin.health = make(chan *rm.Device)
 	plugin.stop = make(chan any)
+	plugin.update = make(chan struct{}, 1)
 	plugin.disableHealthChecks = make(chan bool, 1)
 	plugin.ackDisableHealthChecks = make(chan bool, 1)
 	plugin.disableWatchAndRegister = make(chan bool, 1)
@@ -203,6 +216,7 @@ func (plugin *NvidiaDevicePlugin) cleanup() {
 	plugin.server = nil
 	plugin.health = nil
 	plugin.stop = nil
+	plugin.update = nil
 	plugin.disableHealthChecks = nil
 	plugin.ackDisableHealthChecks = nil
 	plugin.disableWatchAndRegister = nil
@@ -211,7 +225,58 @@ func (plugin *NvidiaDevicePlugin) cleanup() {
 
 // Devices returns the full set of devices associated with the plugin.
 func (plugin *NvidiaDevicePlugin) Devices() rm.Devices {
+	if v := plugin.devices.Load(); v != nil {
+		return v.(rm.Devices)
+	}
 	return plugin.rm.Devices()
+}
+
+// Reload reloads the per-node JSON config (/config/config.json) and updates
+// the device list and scheduler-related parameters in-place.
+// It does NOT restart the gRPC server; instead it triggers ListAndWatch to
+// resend an updated device list to kubelet.
+func (plugin *NvidiaDevicePlugin) Reload() error {
+	sConfig, mode, err := LoadNvidiaDevicePluginConfig()
+	if err != nil {
+		return err
+	}
+
+	// Re-init global device config used by scheduler/annotation paths.
+	if err := config.InitDevicesWithConfig(sConfig); err != nil {
+		return err
+	}
+
+	plugin.configMu.Lock()
+	plugin.schedulerConfig = sConfig.NvidiaConfig
+	plugin.operatingMode = mode
+	plugin.configMu.Unlock()
+
+	// Update exposed devices (copy-on-write) based on the latest filter.
+	plugin.devices.Store(filterDevices(plugin.rm.Devices()))
+	plugin.notifyUpdate()
+	return nil
+}
+
+func (plugin *NvidiaDevicePlugin) notifyUpdate() {
+	ch := plugin.update
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func filterDevices(all rm.Devices) rm.Devices {
+	filtered := make(rm.Devices, len(all))
+	for key, dev := range all {
+		if nvidia.FilterDeviceToRegister(dev.ID, dev.Index) {
+			continue
+		}
+		filtered[key] = dev
+	}
+	return filtered
 }
 
 // Start starts the gRPC server, registers the device plugin with the Kubelet,
@@ -261,7 +326,10 @@ func (plugin *NvidiaDevicePlugin) Start() error {
 	var deviceSupportMig bool
 	for _, name := range deviceNames {
 		deviceSupportMig = false
-		for _, migTemplate := range plugin.schedulerConfig.MigGeometriesList {
+		plugin.configMu.RLock()
+		migTemplates := plugin.schedulerConfig.MigGeometriesList
+		plugin.configMu.RUnlock()
+		for _, migTemplate := range migTemplates {
 			if containsModel(name, migTemplate.Models) {
 				deviceSupportMig = true
 				break
@@ -283,7 +351,10 @@ func (plugin *NvidiaDevicePlugin) Start() error {
 		outStr := stdout.Bytes()
 		yaml.Unmarshal(outStr, &plugin.migCurrent)
 		os.WriteFile("/tmp/migconfig.yaml", outStr, os.ModePerm)
-		if plugin.operatingMode == "mig" {
+		plugin.configMu.RLock()
+		operatingMode := plugin.operatingMode
+		plugin.configMu.RUnlock()
+		if operatingMode == "mig" {
 			HamiInitMigConfig, err := plugin.processMigConfigs(plugin.migCurrent.MigConfigs, deviceNumbers)
 			if err != nil {
 				klog.Infof("no device in node:%v", err)
@@ -424,6 +495,8 @@ func (plugin *NvidiaDevicePlugin) ListAndWatch(e *kubeletdevicepluginv1beta1.Emp
 		select {
 		case <-plugin.stop:
 			return nil
+		case <-plugin.update:
+			s.Send(&kubeletdevicepluginv1beta1.ListAndWatchResponse{Devices: plugin.apiDevices()})
 		case d := <-plugin.health:
 			// FIXME: there is no way to recover from the Unhealthy state.
 			d.Health = kubeletdevicepluginv1beta1.Unhealthy
@@ -476,7 +549,7 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 			}
 
 			for _, id := range req.DevicesIDs {
-				if !plugin.rm.Devices().Contains(id) {
+				if !plugin.Devices().Contains(id) {
 					PodAllocationFailed(nodename, current, NodeLockNvidia)
 					return nil, fmt.Errorf("invalid allocation request for '%s': unknown device: %s", plugin.rm.Resource(), id)
 				}
@@ -510,20 +583,26 @@ func (plugin *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *kubeletdev
 				return &kubeletdevicepluginv1beta1.AllocateResponse{}, err
 			}
 
-			if plugin.operatingMode != "mig" {
+			plugin.configMu.RLock()
+			operatingMode := plugin.operatingMode
+			deviceMemoryScaling := plugin.schedulerConfig.DeviceMemoryScaling
+			logLevel := plugin.schedulerConfig.LogLevel
+			disableCoreLimit := plugin.schedulerConfig.DisableCoreLimit
+			plugin.configMu.RUnlock()
+			if operatingMode != "mig" {
 				for i, dev := range devreq {
 					limitKey := fmt.Sprintf("CUDA_DEVICE_MEMORY_LIMIT_%v", i)
 					response.Envs[limitKey] = fmt.Sprintf("%vm", dev.Usedmem)
 				}
 				response.Envs["CUDA_DEVICE_SM_LIMIT"] = fmt.Sprint(devreq[0].Usedcores)
 				response.Envs["CUDA_DEVICE_MEMORY_SHARED_CACHE"] = fmt.Sprintf("%s/vgpu/%v.cache", hostHookPath, uuid.New().String())
-				if *plugin.schedulerConfig.DeviceMemoryScaling > 1 {
+				if *deviceMemoryScaling > 1 {
 					response.Envs["CUDA_OVERSUBSCRIBE"] = "true"
 				}
-				if *plugin.schedulerConfig.LogLevel != "" {
-					response.Envs["LIBCUDA_LOG_LEVEL"] = string(*plugin.schedulerConfig.LogLevel)
+				if *logLevel != "" {
+					response.Envs["LIBCUDA_LOG_LEVEL"] = string(*logLevel)
 				}
-				if plugin.schedulerConfig.DisableCoreLimit {
+				if disableCoreLimit {
 					response.Envs[util.CoreLimitSwitch] = "disable"
 				}
 				cacheFileHostDirectory := fmt.Sprintf("%s/vgpu/containers/%s_%s", hostHookPath, current.UID, currentCtr.Name)
@@ -699,13 +778,16 @@ func (plugin *NvidiaDevicePlugin) deviceIDsFromAnnotatedDeviceIDs(ids []string) 
 		deviceIDs = rm.AnnotatedIDs(ids).GetIDs()
 	}
 	if *plugin.config.Flags.Plugin.DeviceIDStrategy == spec.DeviceIDStrategyIndex {
-		deviceIDs = plugin.rm.Devices().Subset(ids).GetIndices()
+		deviceIDs = plugin.Devices().Subset(ids).GetIndices()
 	}
 	return deviceIDs
 }
 
 func (plugin *NvidiaDevicePlugin) apiDevices() []*kubeletdevicepluginv1beta1.Device {
-	return plugin.rm.Devices().GetPluginDevices(*plugin.schedulerConfig.DeviceSplitCount)
+	plugin.configMu.RLock()
+	splitCount := plugin.schedulerConfig.DeviceSplitCount
+	plugin.configMu.RUnlock()
+	return plugin.Devices().GetPluginDevices(*splitCount)
 }
 
 func (plugin *NvidiaDevicePlugin) apiEnvs(envvar string, deviceIDs []string) map[string]string {

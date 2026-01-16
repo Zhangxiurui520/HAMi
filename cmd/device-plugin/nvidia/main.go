@@ -206,6 +206,7 @@ func start(c *cli.Context, flags []cli.Flag) error {
 	var restarting bool
 	var restartTimeout <-chan time.Time
 	var plugins []plugin.Interface
+	var lastConfigReload time.Time
 restart:
 	// If we are restarting, stop plugins from previous run.
 	if restarting {
@@ -246,15 +247,23 @@ restart:
 				goto restart
 			}
 			// If the device-plugin config mounted from ConfigMap changed, restart plugins so
-			// they reload the config and re-register resources with kubelet.
+			// they reload the config and re-advertise resources to kubelet.
 			if event.Op&(fsnotify.Create|fsnotify.Rename|fsnotify.Remove|fsnotify.Write) != 0 {
 				base := filepath.Base(event.Name)
 				klog.Infof("inotify: config change detected (event=%s, file=%s)", event.Op, event.Name)
 				if base == filepath.Base(plugin.ConfigFilePath) ||
 					base == "..data" ||
 					strings.HasPrefix(base, "..") {
-					klog.Infof("inotify: config change detected (event=%s, file=%s), restarting plugins", event.Op, event.Name)
-					goto restart
+					// Debounce bursts of events from ConfigMap updates.
+					if time.Since(lastConfigReload) < time.Second {
+						continue
+					}
+					lastConfigReload = time.Now()
+					err := reloadPlugins(plugins)
+					if err != nil {
+						klog.Errorf("failed to hot-reload plugins, falling back to restart: %v", err)
+						goto restart
+					}
 				}
 			}
 
@@ -282,6 +291,24 @@ exit:
 		return fmt.Errorf("error stopping plugins: %v", err)
 	}
 	return nil
+}
+
+func reloadPlugins(plugins []plugin.Interface) error {
+	var errs []error
+	for _, p := range plugins {
+		if p == nil {
+			continue
+		}
+		// Only reload plugins that support it.
+		reloader, ok := p.(interface{ Reload() error })
+		if !ok {
+			continue
+		}
+		if err := reloader.Reload(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errorsutil.NewAggregate(errs)
 }
 
 func startPlugins(c *cli.Context, flags []cli.Flag, restarting bool) ([]plugin.Interface, bool, error) {
